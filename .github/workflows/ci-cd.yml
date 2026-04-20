@@ -1,0 +1,260 @@
+name: AUPP LMS CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  DOCKER_IMAGE: aupp-lms
+
+jobs:
+
+  # ═══════════════════════════════════════════════════════════
+  # JOB 1 — Run Tests & Generate Coverage
+  # ═══════════════════════════════════════════════════════════
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Run Tests with Coverage
+        run: npm run test:ci
+
+      - name: Upload Coverage Report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+
+  # ═══════════════════════════════════════════════════════════
+  # JOB 2 — SonarQube Code Quality Scan
+  # Pipeline FAILS if Quality Gate does not pass
+  # ═══════════════════════════════════════════════════════════
+  sonarqube:
+    name: SonarQube Code Quality
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # Full history needed for SonarQube blame analysis
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install Dependencies & Run Tests
+        run: |
+          npm ci
+          npm run test:ci
+
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@master
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+      - name: SonarQube Quality Gate Check
+        uses: SonarSource/sonarqube-quality-gate-action@master
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        # ⛔ Pipeline STOPS HERE if Quality Gate FAILS
+
+  # ═══════════════════════════════════════════════════════════
+  # JOB 3 — Trivy Security Scan
+  # Pipeline FAILS if CRITICAL vulnerabilities are found
+  # ═══════════════════════════════════════════════════════════
+  trivy-scan:
+    name: Trivy Security Scan
+    runs-on: ubuntu-latest
+    needs: sonarqube
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Build Docker Image for Scanning
+        run: docker build -t ${{ env.DOCKER_IMAGE }}:scan .
+
+      - name: Trivy — Scan Docker Image for CRITICAL CVEs
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: '${{ env.DOCKER_IMAGE }}:scan'
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL'
+        # ⛔ Pipeline STOPS HERE if CRITICAL vulnerabilities found
+
+      - name: Trivy — Scan Filesystem Dependencies
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'table'
+          exit-code: '1'
+          severity: 'CRITICAL'
+
+      - name: Trivy — Generate Full HTML Report
+        uses: aquasecurity/trivy-action@master
+        if: always()
+        with:
+          image-ref: '${{ env.DOCKER_IMAGE }}:scan'
+          format: 'template'
+          template: '@/contrib/html.tpl'
+          output: 'trivy-report.html'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+
+      - name: Upload Trivy Report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-security-report
+          path: trivy-report.html
+
+  # ═══════════════════════════════════════════════════════════
+  # JOB 4 — Build & Push Docker Image to Docker Hub
+  # Only runs after all scans pass
+  # ═══════════════════════════════════════════════════════════
+  build-push:
+    name: Build and Push Docker Image
+    runs-on: ubuntu-latest
+    needs: trivy-scan
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tags }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Set Image Metadata
+        id: meta
+        run: |
+          SHORT_SHA=${GITHUB_SHA::8}
+          echo "tags=${{ secrets.DOCKER_USERNAME }}/${{ env.DOCKER_IMAGE }}:${SHORT_SHA}" >> $GITHUB_OUTPUT
+          echo "short_sha=${SHORT_SHA}" >> $GITHUB_OUTPUT
+
+      - name: Build Docker Image
+        run: |
+          SHORT_SHA=${GITHUB_SHA::8}
+          docker build \
+            --build-arg APP_VERSION=${SHORT_SHA} \
+            -t ${{ secrets.DOCKER_USERNAME }}/${{ env.DOCKER_IMAGE }}:${SHORT_SHA} \
+            -t ${{ secrets.DOCKER_USERNAME }}/${{ env.DOCKER_IMAGE }}:latest \
+            .
+
+      - name: Push Docker Image
+        run: |
+          SHORT_SHA=${GITHUB_SHA::8}
+          docker push ${{ secrets.DOCKER_USERNAME }}/${{ env.DOCKER_IMAGE }}:${SHORT_SHA}
+          docker push ${{ secrets.DOCKER_USERNAME }}/${{ env.DOCKER_IMAGE }}:latest
+
+  # ═══════════════════════════════════════════════════════════
+  # JOB 5 — Terraform: Provision EC2
+  # ═══════════════════════════════════════════════════════════
+  terraform:
+    name: Terraform Provision EC2
+    runs-on: ubuntu-latest
+    needs: build-push
+    defaults:
+      run:
+        working-directory: ./terraform
+    outputs:
+      ec2_ip: ${{ steps.tf_output.outputs.ec2_ip }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Terraform Init
+        run: terraform init
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: Terraform Plan
+        run: terraform plan -var="key_name=${{ secrets.EC2_KEY_NAME }}" -out=tfplan
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+      - name: Get EC2 Public IP
+        id: tf_output
+        run: |
+          EC2_IP=$(terraform output -raw ec2_public_ip)
+          echo "ec2_ip=${EC2_IP}" >> $GITHUB_OUTPUT
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+  # ═══════════════════════════════════════════════════════════
+  # JOB 6 — Deploy Docker Container to EC2
+  # ═══════════════════════════════════════════════════════════
+  deploy:
+    name: Deploy to EC2
+    runs-on: ubuntu-latest
+    needs: terraform
+    steps:
+      - name: Deploy Docker Container via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ needs.terraform.outputs.ec2_ip || secrets.EC2_HOST }}
+          username: ubuntu
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            # Pull the latest image
+            docker pull ${{ secrets.DOCKER_USERNAME }}/aupp-lms:latest
+
+            # Stop and remove old container (gracefully)
+            docker stop aupp-lms 2>/dev/null || true
+            docker rm   aupp-lms 2>/dev/null || true
+
+            # Start the new container
+            docker run -d \
+              --name aupp-lms \
+              --restart unless-stopped \
+              -p 3000:3000 \
+              -e NODE_ENV=production \
+              -e APP_VERSION=${{ github.sha }} \
+              ${{ secrets.DOCKER_USERNAME }}/aupp-lms:latest
+
+            # Wait for the container to start
+            sleep 5
+
+            # Health check
+            curl -f http://localhost:3000/health && echo "✅ Deployment successful!" || exit 1
+
+            # Remove unused images
+            docker image prune -f
