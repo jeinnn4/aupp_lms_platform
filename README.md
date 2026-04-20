@@ -1,1 +1,0 @@
-# aupp_lms_platform
