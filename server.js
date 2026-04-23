@@ -43,7 +43,7 @@ const db = {
   courses: [
     { id: 101, name: 'Introduction to Computer Science', instructor: 'Dr. Kim', credits: 3 },
     { id: 102, name: 'Web Development',                  instructor: 'Prof. Lee', credits: 3 },
-    { id: 103, name: 'Database Systems',                 instructor: 'Dr. Jeon', credits: 3 },
+    { id: 103, name: 'Cloud Computing',                 instructor: 'Dr. Jeon', credits: 3 },
   ],
   grades: [],
 };
