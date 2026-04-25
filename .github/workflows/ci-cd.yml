@@ -108,14 +108,13 @@ jobs:
           exit-code: '1'
           severity: 'CRITICAL'
 
-      - name: Trivy — Generate Full HTML Report
+      - name: Trivy — Generate Full Report
         uses: aquasecurity/trivy-action@master
         if: always()
         with:
           image-ref: '${{ env.DOCKER_IMAGE }}:scan'
-          format: 'template'
-          template: '@/contrib/html.tpl'
-          output: 'trivy-report.html'
+          format: 'json'
+          output: 'trivy-report.json'
           severity: 'CRITICAL,HIGH,MEDIUM'
 
       - name: Upload Trivy Report
@@ -123,7 +122,7 @@ jobs:
         if: always()
         with:
           name: trivy-security-report
-          path: trivy-report.html
+          path: trivy-report.json
 
   # ═══════════════════════════════════════════════════════════
   # JOB 4 — Build & Push Docker Image to Docker Hub
