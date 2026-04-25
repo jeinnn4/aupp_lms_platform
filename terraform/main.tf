@@ -5,6 +5,12 @@ terraform {
       version = "~> 5.0"
     }
   }
+
+  backend "s3" {
+    bucket = "aupp-lms-tfstate"
+    key    = "terraform.tfstate"
+    region = "us-east-1"
+  }
 }
 
 provider "aws" {
@@ -55,7 +61,6 @@ resource "aws_security_group" "aupp_sg" {
   description = "Security group for AUPP LMS server"
   vpc_id      = aws_vpc.aupp_vpc.id
 
-  # SSH
   ingress {
     from_port   = 22
     to_port     = 22
@@ -64,7 +69,6 @@ resource "aws_security_group" "aupp_sg" {
     description = "SSH access"
   }
 
-  # App port
   ingress {
     from_port   = 3000
     to_port     = 3000
@@ -73,7 +77,6 @@ resource "aws_security_group" "aupp_sg" {
     description = "AUPP LMS application"
   }
 
-  # Prometheus
   ingress {
     from_port   = 9090
     to_port     = 9090
@@ -82,7 +85,6 @@ resource "aws_security_group" "aupp_sg" {
     description = "Prometheus"
   }
 
-  # Grafana
   ingress {
     from_port   = 3001
     to_port     = 3001
@@ -91,7 +93,6 @@ resource "aws_security_group" "aupp_sg" {
     description = "Grafana"
   }
 
-  # Node Exporter
   ingress {
     from_port   = 9100
     to_port     = 9100
@@ -100,7 +101,6 @@ resource "aws_security_group" "aupp_sg" {
     description = "Node Exporter"
   }
 
-  # All outbound
   egress {
     from_port   = 0
     to_port     = 0
