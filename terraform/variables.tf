@@ -1,7 +1,7 @@
 variable "aws_region" {
   description = "AWS region to deploy resources"
   type        = string
-  default     = "ap-southeast-1"   # Singapore — closest to Phnom Penh
+  default     = "us-east-1"   # Singapore — closest to Phnom Penh
 }
 
 variable "ami_id" {
