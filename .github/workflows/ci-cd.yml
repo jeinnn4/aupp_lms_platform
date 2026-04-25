@@ -25,10 +25,9 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
 
       - name: Install Dependencies
-        run: npm ci
+        run: npm install
 
       - name: Run Tests with Coverage
         run: npm run test:ci
@@ -51,31 +50,29 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # Full history needed for SonarQube blame analysis
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
 
       - name: Install Dependencies & Run Tests
         run: |
-          npm ci
+          npm install
           npm run test:ci
 
       - name: SonarQube Scan
-        uses: SonarSource/sonarqube-scan-action@master
+        uses: SonarSource/sonarqube-scan-action@v5
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
 
       - name: SonarQube Quality Gate Check
-        uses: SonarSource/sonarqube-quality-gate-action@master
+        uses: SonarSource/sonarqube-quality-gate-action@v1.1.0
         timeout-minutes: 5
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        # ⛔ Pipeline STOPS HERE if Quality Gate FAILS
 
   # ═══════════════════════════════════════════════════════════
   # JOB 3 — Trivy Security Scan
@@ -101,7 +98,6 @@ jobs:
           ignore-unfixed: true
           vuln-type: 'os,library'
           severity: 'CRITICAL'
-        # ⛔ Pipeline STOPS HERE if CRITICAL vulnerabilities found
 
       - name: Trivy — Scan Filesystem Dependencies
         uses: aquasecurity/trivy-action@master
@@ -131,14 +127,11 @@ jobs:
 
   # ═══════════════════════════════════════════════════════════
   # JOB 4 — Build & Push Docker Image to Docker Hub
-  # Only runs after all scans pass
   # ═══════════════════════════════════════════════════════════
   build-push:
     name: Build and Push Docker Image
     runs-on: ubuntu-latest
     needs: trivy-scan
-    outputs:
-      image_tag: ${{ steps.meta.outputs.tags }}
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -153,7 +146,6 @@ jobs:
         id: meta
         run: |
           SHORT_SHA=${GITHUB_SHA::8}
-          echo "tags=${{ secrets.DOCKER_USERNAME }}/${{ env.DOCKER_IMAGE }}:${SHORT_SHA}" >> $GITHUB_OUTPUT
           echo "short_sha=${SHORT_SHA}" >> $GITHUB_OUTPUT
 
       - name: Build Docker Image
@@ -234,14 +226,9 @@ jobs:
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
-            # Pull the latest image
             docker pull ${{ secrets.DOCKER_USERNAME }}/aupp-lms:latest
-
-            # Stop and remove old container (gracefully)
             docker stop aupp-lms 2>/dev/null || true
             docker rm   aupp-lms 2>/dev/null || true
-
-            # Start the new container
             docker run -d \
               --name aupp-lms \
               --restart unless-stopped \
@@ -249,12 +236,6 @@ jobs:
               -e NODE_ENV=production \
               -e APP_VERSION=${{ github.sha }} \
               ${{ secrets.DOCKER_USERNAME }}/aupp-lms:latest
-
-            # Wait for the container to start
             sleep 5
-
-            # Health check
-            curl -f http://localhost:3000/health && echo "✅ Deployment successful!" || exit 1
-
-            # Remove unused images
+            curl -f http://localhost:3000/health && echo "Deployment successful!" || exit 1
             docker image prune -f
