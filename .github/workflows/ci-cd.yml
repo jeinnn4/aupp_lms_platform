@@ -204,7 +204,7 @@ jobs:
       - name: Get EC2 Public IP
         id: tf_output
         run: |
-          EC2_IP=$(terraform output -raw ec2_public_ip)
+          EC2_IP=$(terraform output -raw ec2_public_ip 2>/dev/null || echo "${{ secrets.EC2_HOST }}")
           echo "ec2_ip=${EC2_IP}" >> $GITHUB_OUTPUT
           echo "EC2 IP: ${EC2_IP}"
         env:
@@ -227,7 +227,7 @@ jobs:
       - name: Deploy Docker Container via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ needs.terraform.outputs.ec2_ip || secrets.EC2_HOST }}
+          host: ${{ secrets.EC2_HOST }}
           username: ubuntu
           key: ${{ secrets.EC2_SSH_KEY }}
           timeout: 120s
